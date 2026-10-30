@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
-"""Offline Field Kit v0.2 — local network documentation and port check.
+"""Offline Field Kit v0.3 — local network documentation and port check.
 
 v0.2 adds a network device list read passively from the local ARP
 cache only (no ARP spoofing, no network-wide scan, no external lookup).
+
+v0.3 adds a security-awareness checklist only: it reuses data the tool
+already collected (open common ports, ARP device count, OS/Python
+versions) and turns it into manual-review reminders. It never tries a
+password, never attempts a login, never checks an update server, and
+never probes a service beyond the common-port check v0.1 already did.
+Every checklist item stays "manual-review": the user verifies it.
 
 Works fully offline. Uses only the Python standard library.
 Sends no data to any server and collects no passwords or personal data.
@@ -274,8 +281,64 @@ def collect_arp_devices() -> tuple[list[dict], str | None]:
     return [], None
 
 
+def security_checklist(port_results: dict, arp_devices: list[dict]) -> list[dict]:
+    """Build a manual-review awareness checklist from already-known data.
+
+    No credential is tried, no login is attempted, and no new probe is
+    sent. Each item is a reminder for the user to verify by hand.
+    """
+    open_services = sorted(
+        {p["service"] for ports in port_results.values() for p in ports})
+    open_summary = (
+        ", ".join(open_services) if open_services
+        else "no common ports open on localhost or gateway")
+    return [
+        {
+            "item": "default-passwords",
+            "title": "Change any factory / default passwords",
+            "why": "Devices and services left on factory credentials are the "
+                   "most common easy entry point.",
+            "action": "Change the admin password on your router and on any "
+                      "service listed below; use a unique password per device.",
+            "status": "manual-review",
+            "evidence": f"Open common services observed: {open_summary}. "
+                        "This tool did not try any password or login.",
+        },
+        {
+            "item": "updates",
+            "title": "Keep the OS, router firmware and Python up to date",
+            "why": "Unpatched systems keep known vulnerabilities open.",
+            "action": "Check for OS and router-firmware updates yourself; "
+                      "this tool does not contact any update server.",
+            "status": "manual-review",
+            "evidence": f"Local system: {platform.system()} "
+                        f"{platform.release()}, Python {platform.python_version()}.",
+        },
+        {
+            "item": "open-services-and-shares",
+            "title": "Close services and shares you do not use",
+            "why": "Every open service or shared folder widens what an "
+                   "attacker on the local network can reach.",
+            "action": "Review the open ports above and turn off file sharing "
+                      "or remote access you do not need.",
+            "status": "manual-review",
+            "evidence": f"Open common services observed: {open_summary}.",
+        },
+        {
+            "item": "unknown-devices",
+            "title": "Verify every device on the local network",
+            "why": "An unfamiliar device on the ARP list may be a neighbour, "
+                   "a guest, or something that should not be there.",
+            "action": "Compare the ARP device list above with devices you own; "
+                      "investigate any IP/MAC you do not recognise.",
+            "status": "manual-review",
+            "evidence": f"{len(arp_devices)} device(s) in the local ARP cache.",
+        },
+    ]
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Offline Field Kit v0.2")
+    parser = argparse.ArgumentParser(description="Offline Field Kit v0.3")
     parser.add_argument("--output", default="output",
                         help="Output directory (default: output)")
     args = parser.parse_args(argv)
@@ -293,10 +356,11 @@ def main(argv: list[str] | None = None) -> int:
         targets["gateway"] = gw
     port_results = {name: scan_ports(host) for name, host in targets.items()}
     arp_devices, arp_source = collect_arp_devices()
+    checklist = security_checklist(port_results, arp_devices)
 
     report = {
         "tool": "Offline Field Kit",
-        "version": "0.2",
+        "version": "0.3",
         "generated_at_utc": timestamp,
         "hostname": socket.gethostname(),
         "local_ip": local_ip,
@@ -306,6 +370,7 @@ def main(argv: list[str] | None = None) -> int:
         "open_ports": port_results,
         "arp_devices": arp_devices,
         "arp_source": arp_source,
+        "security_checklist": checklist,
         "notes": [
             "Scan limited to common ports with short timeouts.",
             "Subnet is shown as /24 when the real netmask is unavailable.",
@@ -315,6 +380,8 @@ def main(argv: list[str] | None = None) -> int:
             "arp_devices is read passively from the local ARP cache only; "
             "no ARP spoofing, no network-wide scan, no external lookup.",
             "arp_source is null when no ARP command was available.",
+            "security_checklist is an awareness reminder only: every item "
+            "is manual-review, no password was tried and no login attempted.",
         ],
     }
 
@@ -330,7 +397,7 @@ def main(argv: list[str] | None = None) -> int:
             "unreachable" if value is False else "not detected")
 
     lines = [
-        "# Offline Field Kit Report — v0.2",
+        "# Offline Field Kit Report — v0.3",
         "",
         f"- Generated (UTC): {timestamp}",
         f"- Hostname: {report['hostname']}",
@@ -379,11 +446,24 @@ def main(argv: list[str] | None = None) -> int:
             lines.append("- Note: no ARP command was available on this system.")
         lines.append("")
     lines += [
+        "## Security awareness checklist (manual review only)",
+        "",
+        "No password was tried and no login was attempted. "
+        "Verify each item yourself:",
+        "",
+    ]
+    for item in checklist:
+        lines.append(f"- [review] **{item['title']}** — {item['why']}")
+        lines.append(f"  - Action: {item['action']}")
+        lines.append(f"  - Evidence: {item['evidence']}")
+        lines.append("")
+    lines += [
         "## Notes",
         "",
         "- Scan limited to common ports with short timeouts.",
         "- Device list is read passively from the local ARP cache only.",
         "- No data was sent to any server; no passwords or personal data collected.",
+        "- Checklist items are awareness reminders only, not test results.",
         "",
     ]
     (out_dir / "report.md").write_text("\n".join(lines), encoding="utf-8")
